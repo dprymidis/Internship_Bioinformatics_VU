@@ -1,0 +1,410 @@
+---
+title: "EdgeR and GSEA analysis"
+author: "Prymidis Dimitrios"
+date: "12/20/2020"
+output: 
+  html_document:
+    toc: true
+    number_sections: true
+---
+
+#  Load libraries 
+```{r setup, include=FALSE, echo=TRUE, results = 'hide'}
+knitr::opts_chunk$set(
+  echo = FALSE, warning=FALSE, message = FALSE
+)
+
+library(tidyverse)
+library(factoextra)
+library(BiocManager)
+library(TCGAbiolinks)
+library(tidyverse)
+library(EnhancedVolcano)
+library(edgeR)
+library(clusterProfiler)
+library(EGSEA)
+```
+
+Set working director
+```{r}
+setwd("~/Documents/Master/internship/APC/APC_Project")
+```
+
+
+```{r load sample data}
+samp_to_class <- read.csv("./1_trunc_samples.filtered") # samples with 0 or 1 truncating mutation
+samp_to_class<- samp_to_class[samp_to_class$Class != "2",]
+
+#samp_to_class$Class[samp_to_class$Class != 0] <- "trunc" #Class 0 samples with no trunc mutation vs Class 1 samples with 1 trunc mutation
+#samp_to_class$Class[samp_to_class$Class == 0] <- "no_trunc"
+tsb <- samp_to_class[,1] # make tumor sample barcode rownames
+rownames(samp_to_class) <- tsb
+samp_to_class$Class <- as.factor(samp_to_class$Class) # Make class column a factor
+samp_to_class$Class <- relevel(samp_to_class$Class, ref =  "0") # make no_trunc the reference level
+table(samp_to_class$Class)
+```
+# Remove CNA
+```{r}
+#CNV <- read.csv("./produced_data/APC_CNV") 
+#colnames(CNV) <- c("cna", "Tumor_Sample_Barcode")
+#CNV$Tumor_Sample_Barcode <- sapply(CNV$Tumor_Sample_Barcode, function(x){substring(x, 1, 15)})
+#a<- CNV %>% filter(cna != 0)
+#samp_to_class <- samp_to_class[!samp_to_class$Tumor_Sample_Barcode %in% a$Tumor_Sample_Barcode,]
+#table(samp_to_class$Class)
+```
+
+Load Gene expression data
+
+We remove genes with no counts and genes with zero variance
+
+```{r}
+
+# Load all gene expression countdata
+CC <- as.data.frame(read.csv("./Data/Colorectal/Gene_expression/CRC_Gene_expression_all_Counts"))
+names(CC)[1] <- "Tumor_Sample_Barcode"  # rename first column to be Tumor Sample Barcode
+Counts<- CC
+
+# Take the correct samples from Gene expression data
+Counts$Tumor_Sample_Barcode <- sapply(Counts$Tumor_Sample_Barcode, function(x){substring(x, 1, 15)})
+Counts <- Counts[Counts$Tumor_Sample_Barcode %in% samp_to_class$Tumor_Sample_Barcode,]
+set.seed(123)
+Counts <-Counts %>% distinct(Tumor_Sample_Barcode, .keep_all = TRUE) ### take unique rows (it is a bit random which data it is taking)
+rownames(Counts) <- Counts$Tumor_Sample_Barcode # make tumor sample barcode rownames
+Counts$Tumor_Sample_Barcode <- NULL # and delete the column
+
+# Remove columns with low counts and or zero variance variables
+temp <- Counts[, - as.numeric(which(apply(Counts, 2, var) == 0))] # Remove columns with zero variance 
+temp2<- temp[,colSums(temp)>10] # Remove column with low counts 
+Counts <- NULL
+Counts<- temp2
+Counts <- t(Counts) # transpose the data frame. We want genes are rows ans samples as columns
+
+#### Make the sample indexes the same
+all(colnames(Counts) %in% rownames(samp_to_class)) # Check if there are the same samples 
+all(colnames(Counts) == rownames(samp_to_class))# Check if the samples are lined up correctly
+samp_to_class <- samp_to_class[match(colnames(Counts), rownames(samp_to_class)), ]
+all(colnames(Counts) == rownames(samp_to_class)) # check again
+all(colnames(Counts) == rownames(samp_to_class))
+```
+
+We also remove genes that are unexpressed or very lowly expressed in the samples.
+
+# Low counts gene costum cutoff
+
+```{r expr-cutoff}
+cpm_log <- cpm(Counts, log = TRUE)
+median_log2_cpm <- apply(cpm_log, 1, median)
+expr_cutoff <- -1
+hist(median_log2_cpm)
+abline(v = expr_cutoff, col = "red", lwd = 3)
+sum(median_log2_cpm > expr_cutoff)
+Counts <- Counts[median_log2_cpm > expr_cutoff, ]
+```
+
+
+After removing all genes with a median log~2~ cpm below `r expr_cutoff`, we have `r sum(median_log2_cpm > expr_cutoff)` genes remaining.
+A good rule of thumb when analyzing RNA-seq data from a single cell type is to expect 9-12 thousand expressed genes.
+
+After filtering lowly expressed genes, we recalculate the log~2~ cpm.
+
+```{r}
+cpm_log <- cpm(Counts, log = TRUE)
+```
+
+# PCA
+Another method to view the relationships between samples is principal components analysis (PCA).
+Hese we use log(cpm) from our raw counts
+
+```{r pca}
+y = droplevels(samp_to_class$Class)
+res.pca <-  prcomp(t(Counts), scale = TRUE)
+fviz_eig(res.pca) # Plot of explained variance # In all the data we see that the first component explains less variance but the second more.
+fviz_pca_ind(res.pca,
+             col.ind = y, labels = FALSE)
+```
+
+
+## GML model Edge R
+
+We need to create a design matrix to describe the statistical model.
+
+```{r}
+y <- DGEList(Counts)
+y <- calcNormFactors(y)
+design <- model.matrix(~0+samp_to_class$Class, data=y$samples)
+y$samples$group <- samp_to_class$Class
+colnames(design) <- levels(y$samples$group)
+```
+
+And now we test.
+The argument `coef = 2` corresponds to testing the second column of the design matrix, which in this case is whether the sample is from group A or B.
+
+```{r}
+y <- estimateDisp(y, design)
+fit <- glmQLFit(y, design)
+qlf <- glmQLFTest(fit, contrast=c(-1,1))
+a<-as.data.frame(topTags(qlf, 2000))
+aa<- a %>% filter(FDR<0.05)
+
+#a<- qlf[["table"]][["PValue"]]
+#count(a< 0.01)
+
+top <- rownames(topTags(qlf, 721))
+top10 <- rownames(topTags(qlf, 10))
+glmQL.output <- as.data.frame(t(cpm(y)[top,]))
+glmQL.output <- tibble::rownames_to_column(glmQL.output, "Tumor_Sample_Barcode")
+qlfad <- as.data.frame(qlf)
+ER01<- top
+```
+
+# Save the Coutn Output of EdgeR
+
+``` {r}
+#write.csv(glmQL.output, file="./DE_genes.Class0_vs_Class1")
+```
+
+# Box plot of the top 9 differentially expressed genes
+
+```{r}
+par(mfrow = c(2, 4))
+boxplot(as.numeric(cpm_log["EPHB6", ]) ~samp_to_class$Class, xlab = "6.567e-16	", ylab = "EPHB6", main = "title") #,ylim=c(-2,6)
+boxplot(as.numeric(cpm_log["TM4SF4", ]) ~samp_to_class$Class, xlab = "1.431e-13	", ylab = "TM4SF4")
+boxplot(as.numeric(cpm_log["KRT7", ]) ~samp_to_class$Class, xlab = "4.509e-12	", ylab = "KRT7")
+boxplot(as.numeric(cpm_log["KCTD1", ]) ~samp_to_class$Class, xlab = "1.132e-11	", ylab = "KCTD1")
+boxplot(as.numeric(cpm_log["FAM83A", ]) ~samp_to_class$Class, xlab = "2.693e-11	", ylab = "FAM83A")
+boxplot(as.numeric(cpm_log["COLCA1", ]) ~samp_to_class$Class, xlab = "3.036e-11", ylab = "COLCA1")
+boxplot(as.numeric(cpm_log["RSPO3", ]) ~samp_to_class$Class, xlab = "2.266e-10", ylab = "RSPO3")
+boxplot(as.numeric(cpm_log["DAPK1", ]) ~samp_to_class$Class, xlab = "2.777e-10", ylab = "DAPK1")
+
+
+
+```
+
+# Volcano plot
+```{r}
+vcinput<- as.data.frame(rownames(qlf))
+colnames(vcinput) <- "genes"
+vcinput$logFC<-  qlf$table$logFC
+vcinput$PValue <-  qlf$table$PValue
+
+# EnhancedVolcano(vcinput,
+#    lab = vcinput$genes,
+#    x = 'logFC',
+ #   y = 'PValue')
+
+EnhancedVolcano(vcinput,
+                lab = vcinput$genes,
+                x = 'logFC',
+                y = 'PValue',
+                title = 'Class 0 vs Class 1',
+                pCutoff = 0.01,
+                FCcutoff = 1,
+              #  pointSize = 2.0,
+              #  labSize = 5.0,
+                legendPosition = 'right',
+                legendLabSize = 14,
+                legendIconSize = 4.0,
+                # drawConnectors = TRUE,
+                # widthConnectors = 1.0,
+                #  colConnectors = 'black'
+)+ coord_cartesian(xlim=c(-4.5,3),ylim=c(0,17)) +
+  scale_x_continuous(breaks=seq(-5,5,1)) +
+  scale_y_continuous(minor_breaks=seq(1,20,1))
+  
+temp<- vcinput %>% filter(PValue<0.01)
+temp2 <- temp %>% filter(abs(logFC) >2)
+colnames(temp2)[1]<- "SYMBOL"
+```
+# take ER genes and EL net genes
+
+```{r}
+ER01
+EN.genes<- as.data.frame(read.csv("ElNet_genes.Class0_vs_Class1"))
+temp <- EN.genes$X
+EN.genes<-as.character(temp[-1])
+```
+
+
+#####
+# create input for enrichment analysis
+```{r}
+library(clusterProfiler)
+
+### for all genes
+genes.total<- as.data.frame(qlf, sort.by = "PValue")  %>% dplyr::select(logFC) # 15555 total genes
+x<- unique(rownames(genes.total))
+genes.total$SYMBOL <- rownames(genes.total)
+
+x2 = bitr(x, fromType="SYMBOL", toType="ENTREZID", OrgDb="org.Hs.eg.db") # convert SYMBOLS into ENTERZID
+genes.total<- merge(genes.total, x2, by= "SYMBOL")
+
+
+d<- genes.total[,-1]
+## feature 1: numeric vector
+geneList = d[,1] ## 1st column is FC
+## feature 2: named vector
+names(geneList) = as.character(d[,2]) ## assume 2nd column is ID
+## feature 3: decreasing orde
+geneList.all = sort(geneList, decreasing = TRUE)
+gene.all <- names(geneList.all)[abs(geneList.all)>0] # take all genes
+
+
+##### for EdgeR selected genes
+genes.ER <-as.data.frame(topTags(qlf, 721, sort.by = "PValue")) %>% dplyr::select(logFC) # 1000 genes selected from EdgeR and used for elastic net
+x<- unique(rownames(genes.ER))
+genes.ER$SYMBOL <- rownames(genes.ER)
+
+x2 = bitr(x, fromType="SYMBOL", toType="ENTREZID", OrgDb="org.Hs.eg.db")
+genes.ER<- merge(genes.ER, x2, by= "SYMBOL")
+
+d<- genes.ER[,-1]
+## feature 1: numeric vector
+geneList = d[,1] ## 1st column is FC
+## feature 2: named vector
+names(geneList) = as.character(d[,2]) ## assume 2nd column is ID
+## feature 3: decreasing orde
+geneList.er = sort(geneList, decreasing = TRUE)
+gene.er <- names(geneList.er)[abs(geneList.er)>0] # take all genes
+
+```
+
+# create input for elastic net genes
+```{r}
+EN.genes <- genes.total[genes.total$SYMBOL %in% EN.genes,]
+x<- unique(EN.genes$SYMBOL)
+temp = bitr(x, fromType="SYMBOL", toType="ENTREZID", OrgDb="org.Hs.eg.db")
+genes.EN<- merge(genes.ER, temp, by= "SYMBOL")
+genes.EN$ENTREZID.y <- NULL
+colnames(genes.EN)<- c("SYMBOL", "logFC", "ENTREZID")
+
+d<- genes.EN[,-1]
+## feature 1: numeric vector
+geneList = d[,1] ## 1st column is FC
+## feature 2: named vector
+names(geneList) = as.character(d[,2]) ## assume 2nd column is ID
+## feature 3: decreasing orde
+geneList.en = sort(geneList, decreasing = TRUE)
+gene.en <- names(geneList.en)[abs(geneList.en)>0] # take all genes
+```
+
+########
+  GENE SET ENRICHMENT ANALYSIS
+
+```{r}
+library(EGSEA)
+EN.genes
+## 1. 
+# ORA with edgeR selected genes using list
+#EGSEA uses Entrez Gene identifiers
+
+#Get full GSEA report 
+#Create annotation table
+gs.annots <- buildIdx(entrezIDs = EN.genes$ENTREZID,
+                      species = "human",
+                      gsdb.gsets = "all")
+
+#Make helper object
+gene_symbols <- data.frame(entrezGene=EN.genes$ENTREZID, Symbol=EN.genes$SYMBOL)
+#Get pathway enrichments
+gsa.pathways <- egsea.ora(geneIDs = EN.genes$ENTREZID,
+                          title = "KEGG_Pathways",
+                          gs.annots = gs.annots,
+                          symbolsMap = gene_symbols,
+                          logFC = EN.genes$logFC,
+                          sort.by = "p.adj",
+                          report.dir = "ora",
+                          num.threads = 4,
+                          report = T, display.top = 30)
+```
+
+
+```{r}
+## 2.
+## EGSEA on the count matrix
+a <- as.data.frame(cpm(y))
+x<- unique(rownames(a))
+a<- tibble::rownames_to_column(a, "SYMBOL")
+a$SYMBOL
+
+x2 = bitr(x, fromType="SYMBOL", toType="ENTREZID", OrgDb="org.Hs.eg.db") # convert SYMBOLS into ENTERZID
+a<- merge(a, x2, by= "SYMBOL")
+
+rownames(a)<- a$ENTREZID
+a$ENTREZID<- NULL
+agene_symbols <- data.frame(entrezGene=rownames(a), Symbol=a$SYMBOL)
+a$SYMBOL <- NULL
+
+acnt <- as.matrix(a)
+agroup <- samp_to_class$Class
+adesign <- design
+X <- factor(c('no_trunc','trunc'))
+acontrasts<-as.matrix(contr.treatment(X))
+
+#Create annotation table
+gs.annots <- buildIdx(entrezIDs = rownames(acnt),
+                      species = "human",
+                      gsdb.gsets = "all")
+
+# Gene set enrichment analysis
+gsa = egsea.cnt(counts = acnt, group = agroup, design = adesign,
+                contrasts = acontrasts, gs.annots = gs.annots, symbolsMap = agene_symbols,
+                baseGSEAs = egsea.base()[-c(3,4,5,10)], sort.by = "avg.rank",
+                num.threads = 3, report = T,display.top = 40, report.dir = "EGSEA")
+
+### ### ###  END ### ### ###
+
+```
+
+
+
+visualise
+
+```{r}
+ora <- read.delim("GSEA.go", header=TRUE)
+# for go
+ora <- ora %>% filter(Ontology == "BP")
+
+# take name pvalue and log fold
+a<-ora[,c(3,12,19)]
+colnames(a)<- c("Gene_Set", "p.adjusted", "log_fold_change")
+a<- a %>% mutate(la = -log10(p.adjusted))
+b<- head(a, 12)
+
+ggplot(b, aes(x = reorder(Gene_Set, la),la)) +
+  geom_bar(aes(fill = log_fold_change,), stat="identity", position = "dodge", width = 1) +
+ # scale_fill_continuous(low="blue", high="red", limits=c(-1.15, 1), breaks=seq(-1.5,1,by=0.5))+ # this or the next
+ # scale_fill_viridis_c(limits=c(-1.15, 1), breaks=seq(-1.5,1,by=0.5))+
+  scale_fill_gradient2(midpoint = 4.5, low="blue", mid="white", high="red", space ="Lab" )+
+  coord_flip() +
+  theme_classic() + ggtitle("GSEA Gene Ontology Biological Process") + geom_hline(yintercept = -log10(0.05), linetype="dotted", 
+                color = "blue", size=1) + labs(y = "−log10(p.adj)", x = "Gene Set")
+```
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+

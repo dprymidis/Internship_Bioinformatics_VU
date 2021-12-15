@@ -1,0 +1,320 @@
+---
+title: "Differential_expression"
+author: "Prymidis Dimitrios"
+date: "11/30/2020"
+output: 
+  html_document:
+    toc: true
+    number_sections: true
+---
+
+In this R.Markdown we are going to do differential gene analysis using welch's t-test.
+2 Groups: Group 1: "trunc", Group 2: "no_trunc"
+Per gene: Welch's t-test on expression level ad RNA Ranks
+The genes we are interested are the following (11):
+AXIN2, GUCA2A, HNRNPA0, NOLC1, RNF43, SNRPA1, SOX9, TCF7, VILL, ZNHIT2, ZNRF3
+
+
+Here we are using FPKM values
+
+#  Load libraries 
+```{r setup, include=FALSE, echo=TRUE, results = 'hide'}
+knitr::opts_chunk$set(
+  echo = FALSE, warning=FALSE, message = FALSE
+)
+
+library(tidyverse)
+library(plotly)
+library(IRdisplay)
+library(ggplot2)
+library(ggpubr)
+library(rstatix)
+
+```
+
+Set working directory
+```{r}
+setwd("~/Documents/Master/internship/APC/APC_Project")
+```
+
+# load sample data
+Group 1: "trunc", Group 2: "no_trunc"
+```{r load sample data}
+
+samp_to_class <- read.csv("./1_trunc_samples.filtered") # samples with 0 or 1 truncating mutation
+
+samp_to_class$Class[samp_to_class$Class != 0] <- "trunc" 
+samp_to_class$Class[samp_to_class$Class == 0] <- "no_trunc"
+tsb <- samp_to_class[,1] # make tumor sample barcode rownames
+rownames(samp_to_class) <- tsb
+table(samp_to_class$Class)
+samp_to_class$Class <- as.factor(samp_to_class$Class) # Make class column a factor
+samp_to_class$Class <- relevel(samp_to_class$Class, ref =  "no_trunc") # make no_trunc the reference level
+```
+
+# Load count data
+
+```{r}
+
+# Load all gene expression countdata
+CC <- as.data.frame(read.csv("./Data/Colorectal/Gene_expression/CRC_Gene_expression_all_Counts"))
+names(CC)[1] <- "Tumor_Sample_Barcode"  # rename first column to be Tumor Sample Barcode
+Counts<- CC
+
+# Take the correct samples from Gene expression data
+Counts$Tumor_Sample_Barcode <- sapply(Counts$Tumor_Sample_Barcode, function(x){substring(x, 1, 15)})
+Counts <- Counts[Counts$Tumor_Sample_Barcode %in% samp_to_class$Tumor_Sample_Barcode,]
+set.seed(123)
+Counts <-Counts %>% distinct(Tumor_Sample_Barcode, .keep_all = TRUE) ### take unique rows 
+rownames(Counts) <- Counts$Tumor_Sample_Barcode # make tumor sample barcode rownames
+Counts$Tumor_Sample_Barcode <- NULL # and delete the column
+
+# Remove columns with low counts and or zero variance variables
+temp <- Counts[, - as.numeric(which(apply(Counts, 2, var) == 0))] # Remove columns with zero variance 
+temp2<- temp[,colSums(temp)>10] # Remove column with low counts 
+Counts <- NULL
+Counts<- temp2
+
+# Merge classes with Gene expression data
+Counts$Tumor_Sample_Barcode <- rownames(Counts)
+Counts <- merge(samp_to_class, Counts, by = 'Tumor_Sample_Barcode')
+rownames(Counts) <- Counts$Tumor_Sample_Barcode
+Counts$Tumor_Sample_Barcode <- NULL
+```
+There are no columns with zero variance nor columns with only zeros
+
+# z-normalization. (Center and scale) and log scale
+
+Using z-normalized data didnt change any of the following results
+For this Rmd we are using the raw counts
+
+```{r}
+Counts.scaled <- Counts
+Counts.scaled[, -c(1)] <- scale(Counts.scaled[, -c(1)], center = TRUE, scale = TRUE)
+Counts.log <- Counts
+Counts.log[, -c(1)] <- log(Counts.log[, -c(1)]+1) # take the log base e
+
+#Counts<-Counts.log 
+```
+
+# Violin Plots
+
+
+```{r}
+## 1st way
+mean_sd <- function(x) {
+   m <- mean(x)
+   ymin <- m-sd(x)
+   ymax <- m+sd(x)
+   return(c(y=m,ymin=ymin,ymax=ymax))}
+
+#pAXIN2 <- ggplot(Counts.log, aes(x=Class, y=AXIN2)) + geom_violin() + stat_summary(fun.data=mean_sd)
+
+
+########## 2nd way
+# errbar_lims <- group_by(Counts.log, Class) %>% summarize(mean=mean(AXIN2), se=sd(AXIN2)/sqrt(n()),   upper=mean+(2*se), lower=mean-(2*se))
+# pAXIN2 <- ggplot() + geom_violin(data=Counts.log, aes(x=Class, y=AXIN2)) + geom_point(data=errbar_lims, aes(x=Class, y=mean), size=3) +
+ # geom_errorbar(aes(x=errbar_lims$Class, ymax=errbar_lims$upper,   ymin=errbar_lims$lower), stat='identity', width=.25) + theme_minimal()
+###########
+# We are going to use the first way
+
+pAXIN2 <- ggplot(Counts, aes(x=Class, y=AXIN2)) + 
+  geom_violin() + stat_summary(fun.data=mean_sd, color = "red")
+pGUCA2A <- ggplot(Counts, aes(x=Class, y=GUCA2A)) + 
+geom_violin() + stat_summary(fun.data=mean_sd, color = "red")
+pHNRNPA0 <- ggplot(Counts, aes(x=Class, y=HNRNPA0)) + 
+geom_violin() + stat_summary(fun.data=mean_sd, color = "red")
+pNOLC1 <- ggplot(Counts, aes(x=Class, y=NOLC1)) + 
+ geom_violin() + stat_summary(fun.data=mean_sd, color = "red")
+pRNF43 <- ggplot(Counts, aes(x=Class, y=RNF43)) + 
+ geom_violin() + stat_summary(fun.data=mean_sd, color = "red")
+pSNRPA1 <- ggplot(Counts, aes(x=Class, y=SNRPA1 )) + 
+  geom_violin() + stat_summary(fun.data=mean_sd, color = "red")
+pSOX9 <- ggplot(Counts, aes(x=Class, y=SOX9)) + 
+  geom_violin() + stat_summary(fun.data=mean_sd, color = "red")
+pTCF7 <- ggplot(Counts, aes(x=Class, y=TCF7 )) + 
+ geom_violin() + stat_summary(fun.data=mean_sd, color = "red")
+pVILL <- ggplot(Counts, aes(x=Class, y=VILL )) + 
+  geom_violin() + stat_summary(fun.data=mean_sd, color = "red")
+pZNHIT2 <- ggplot(Counts, aes(x=Class, y=ZNHIT2 )) + 
+ geom_violin() + stat_summary(fun.data=mean_sd, color = "red")
+pZNRF3 <- ggplot(Counts, aes(x=Class, y=ZNRF3 )) + 
+geom_violin() + stat_summary(fun.data=mean_sd, color = "red")
+
+ggarrange(pAXIN2, pGUCA2A, pHNRNPA0, pNOLC1, pRNF43, pSNRPA1, pSOX9, pTCF7, pVILL, pZNHIT2, pZNRF3, ncol = 4, nrow = 3)
+```
+
+
+# AXIN2 Plots for data visualisation
+
+````{r}
+summary(Counts %>% filter(Class == "no_trunc") %>% .$AXIN2)
+summary(Counts %>% filter(Class == "trunc") %>% .$AXIN2)
+
+p1 <-Counts %>% filter(Class == "no_trunc") %>% ggplot(aes(AXIN2)) + 
+        geom_histogram(fill = "white", color = "grey30")
+
+p2 <-Counts %>% filter(Class == "trunc") %>% ggplot(aes(AXIN2)) + 
+        geom_histogram(fill = "white", color = "grey30")
+
+ggarrange(p1, p2, ncol = 2)
+
+ggplot(Counts, aes(Class, AXIN2)) +
+        geom_boxplot()
+```
+
+
+The left plots are the "no_trunc" and the right are the "trunc"
+ 
+```{r}
+Counts$Class.x <- NULL
+c01<-  Counts %>% filter(Class.y != "2")
+c02<-  Counts %>% filter(Class.y != "1") 
+```
+# t-test on the Counts
+
+The genes we are interested are the following (11):
+AXIN2, GUCA2A, HNRNPA0, NOLC1, RNF43, SNRPA1, SOX9, TCF7, VILL, ZNHIT2, ZNRF3
+
+```{r}
+t.test(AXIN2 ~ Class.y, data = c02)
+t.test(GUCA2A ~ Class.y, data = c02)
+t.test(HNRNPA0 ~ Class.y, data = c02)
+t.test(NOLC1 ~ Class.y, data = c02)
+t.test(RNF43 ~ Class.y, data = c02)
+t.test(SNRPA1 ~ Class.y, data = c02)
+t.test(SOX9 ~ Class.y, data = c02)
+t.test(TCF7 ~ Class.y, data = c02)
+t.test(VILL ~ Class.y, data = c02)
+t.test(ZNHIT2 ~ Class.y, data = c02)
+t.test(ZNRF3 ~ Class.y, data = c02)
+
+```
+
+# RANK
+Calculate the rank of the samples for the genes we are interested in.
+
+
+````{r}
+rAXIN2<- Counts %>% select(AXIN2, Class) %>% arrange(desc(AXIN2)) %>% mutate(rank =row_number())
+rGUCA2A<- Counts %>% select(GUCA2A, Class) %>% arrange(desc(GUCA2A)) %>% mutate(rank =row_number())
+rHNRNPA0<- Counts %>% select(HNRNPA0, Class) %>% arrange(desc(HNRNPA0)) %>% mutate(rank =row_number())
+rNOLC1<- Counts %>% select(NOLC1, Class) %>% arrange(desc(NOLC1)) %>% mutate(rank =row_number())
+rRNF43<- Counts %>% select(RNF43, Class) %>% arrange(desc(RNF43)) %>% mutate(rank =row_number())
+rSNRPA1<- Counts %>% select(SNRPA1, Class) %>% arrange(desc(SNRPA1)) %>% mutate(rank =row_number())
+rSOX9<- Counts %>% select(SOX9, Class) %>% arrange(desc(SOX9)) %>% mutate(rank =row_number())
+rTCF7<- Counts %>% select(TCF7, Class) %>% arrange(desc(TCF7)) %>% mutate(rank =row_number())
+rVILL<- Counts %>% select(VILL, Class) %>% arrange(desc(VILL)) %>% mutate(rank =row_number())
+rZNHIT2<- Counts %>% select(ZNHIT2, Class) %>% arrange(desc(ZNHIT2)) %>% mutate(rank =row_number())
+rZNRF3<- Counts %>% select(ZNRF3, Class) %>% arrange(desc(ZNRF3)) %>% mutate(rank =row_number())
+
+```
+
+
+# t-test on Ranks
+The genes we are interested are the following (11):
+AXIN2, GUCA2A, HNRNPA0, NOLC1, RNF43, SNRPA1, SOX9, TCF7, VILL, ZNHIT2, ZNRF3 
+
+
+````{r}
+t.test(rank ~ Class, data = rAXIN2)
+t.test(rank ~ Class, data = rGUCA2A)
+t.test(rank ~ Class, data = rHNRNPA0)
+t.test(rank ~ Class, data = rNOLC1)
+t.test(rank ~ Class, data = rRNF43)
+t.test(rank ~ Class, data = rSNRPA1)
+t.test(rank ~ Class, data = rSOX9)
+t.test(rank ~ Class, data = rTCF7)
+t.test(rank ~ Class, data = rVILL)
+t.test(rank ~ Class, data = rZNHIT2)
+t.test(rank ~ Class, data = rZNRF3)
+```
+
+# Get the p-values for the Counts and for the Ranks
+The genes we are interested are the following (11):
+AXIN2, GUCA2A, HNRNPA0, NOLC1, RNF43, SNRPA1, SOX9, TCF7, VILL, ZNHIT2, ZNRF3 
+
+````{r}
+# Counts
+cAXIN2p <- t.test(AXIN2 ~ Class, data = Counts)$p.value
+cGUCA2Ap <-t.test(GUCA2A ~ Class, data = Counts)$p.value
+cHNRNPA0p <-t.test(HNRNPA0 ~ Class, data = Counts)$p.value
+cNOLC1p <-t.test(NOLC1 ~ Class, data = Counts)$p.value
+cRNF43p <-t.test(SNRPA1 ~ Class, data = Counts)$p.value
+cSNRPA1p <-t.test(SNRPA1 ~ Class, data = Counts)$p.value
+cSOX9p <-t.test(TCF7 ~ Class, data = Counts)$p.value
+cTCF7p <-t.test(SOX9 ~ Class, data = Counts)$p.value
+cVILLp <-t.test(VILL ~ Class, data = Counts)$p.value
+cZNHIT2p <-t.test(ZNHIT2 ~ Class, data = Counts)$p.value
+cZNRF3p <-t.test(ZNRF3 ~ Class, data = Counts)$p.value
+
+# Ranks
+rAXIN2p <- t.test(rank ~ Class, data = rAXIN2)$p.value
+rGUCA2Ap <- t.test(rank ~ Class, data = rGUCA2A)$p.value
+rHNRNPA0p <-t.test(rank ~ Class, data = rHNRNPA0)$p.value
+rNOLC1p <-t.test(rank ~ Class, data = rNOLC1)$p.value
+rRNF43p <- t.test(rank ~ Class, data = rRNF43)$p.value
+rSNRPA1p <-t.test(rank ~ Class, data = rSNRPA1)$p.value
+rSOX9p <-t.test(rank ~ Class, data = rSOX9)$p.value
+rTCF7p <-t.test(rank ~ Class, data = rTCF7)$p.value
+rVILLp <-t.test(rank ~ Class, data = rVILL)$p.value
+rZNHIT2p <-t.test(rank ~ Class, data = rZNHIT2)$p.value
+rZNRF3p <- t.test(rank ~ Class, data = rZNRF3)$p.value
+```
+
+# Count and Rank p.values
+
+Table with the p.values from Welch's t-test between  "no_trunc" and "trunc" samples using the Counts and the Ranks 
+
+
+```{r}
+df <- as.data.frame(matrix(0, ncol = 1, nrow = 11))
+names(df)<- "Genes"             
+df$Genes<- c("AXIN2", "GUCA2A", "HNRNPA0", "NOLC1", "RNF43", "SNRPA1", "SOX9", "TCF7", "VILL", "ZNHIT2", "ZNRF3")
+df$Counts <- c(cAXIN2p, cGUCA2Ap, cHNRNPA0p, cNOLC1p, cRNF43p, cSNRPA1p, cSOX9p, cTCF7p, cVILLp, cZNHIT2p, cZNRF3p)
+df$Ranks <- c(rAXIN2p, rGUCA2Ap, rHNRNPA0p, rNOLC1p, rRNF43p, rSNRPA1p, rSOX9p, rTCF7p, rVILLp, rZNHIT2p, rZNRF3p )
+
+df %>% knitr::kable()
+```
+
+
+# Violin Plots for Counts with p.values
+
+
+```{r}
+ggarrange(pAXIN2 + rremove("xlab") , pGUCA2A + rremove("xlab"), pHNRNPA0 + rremove("xlab"), pNOLC1 + rremove("xlab"), pRNF43 + rremove("xlab"), pSNRPA1 + rremove("xlab"), pSOX9 + rremove("xlab"), pTCF7 + rremove("xlab"), pVILL + rremove("xlab"), pZNHIT2 + rremove("xlab"), pZNRF3 + rremove("xlab"), ncol = 4, nrow = 3, labels =  df$Counts)
+```
+
+# Violin Plots for Ranks  with p.values
+
+
+```{r}
+pAXIN2 <- ggplot(rAXIN2, aes(x=Class, y=rank)) + 
+  geom_violin() + stat_summary(fun.data=mean_sd, color = "red")
+pGUCA2A <- ggplot(rGUCA2A, aes(x=Class, y=rank)) + 
+geom_violin() + stat_summary(fun.data=mean_sd, color = "red")
+pHNRNPA0 <- ggplot(rHNRNPA0, aes(x=Class, y=rank)) + 
+geom_violin() + stat_summary(fun.data=mean_sd, color = "red")
+pNOLC1 <- ggplot(rNOLC1, aes(x=Class, y=rank)) + 
+ geom_violin() + stat_summary(fun.data=mean_sd, color = "red")
+pRNF43 <- ggplot(rRNF43, aes(x=Class, y=rank)) + 
+ geom_violin() + stat_summary(fun.data=mean_sd, color = "red")
+pSNRPA1 <- ggplot(rSNRPA1, aes(x=Class, y=rank )) + 
+  geom_violin() + stat_summary(fun.data=mean_sd, color = "red")
+pSOX9 <- ggplot(rSOX9, aes(x=Class, y=rank)) + 
+  geom_violin() + stat_summary(fun.data=mean_sd, color = "red")
+pTCF7 <- ggplot(rTCF7, aes(x=Class, y=rank )) + 
+ geom_violin() + stat_summary(fun.data=mean_sd, color = "red")
+pVILL <- ggplot(rVILL, aes(x=Class, y=rank )) + 
+  geom_violin() + stat_summary(fun.data=mean_sd, color = "red")
+pZNHIT2 <- ggplot(rZNHIT2, aes(x=Class, y=rank )) + 
+ geom_violin() + stat_summary(fun.data=mean_sd, color = "red")
+pZNRF3 <- ggplot(rZNRF3, aes(x=Class, y=rank )) + 
+geom_violin() + stat_summary(fun.data=mean_sd, color = "red")
+
+ggarrange(pAXIN2 + rremove("xlab") , pGUCA2A + rremove("xlab"), pHNRNPA0 + rremove("xlab"), pNOLC1 + rremove("xlab"), pRNF43 + rremove("xlab"), pSNRPA1 + rremove("xlab"), pSOX9 + rremove("xlab"), pTCF7 + rremove("xlab"), pVILL + rremove("xlab"), pZNHIT2 + rremove("xlab"), pZNRF3 + rremove("xlab"), ncol = 4, nrow = 3, labels =  df$Ranks)
+
+```
+
+
+

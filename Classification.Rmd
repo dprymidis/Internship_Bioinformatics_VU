@@ -1,0 +1,351 @@
+---
+title: "Classification
+author: "Prymidis Dimitrios"
+date: "2/3/2021"
+output: 
+  html_document:
+    toc: true
+    number_sections: true
+---
+
+#  Load libraries 
+```{r setup, include=FALSE, echo=TRUE, results = 'hide'}
+knitr::opts_chunk$set(
+  echo = FALSE, warning=FALSE, message = FALSE
+)
+
+library(tidyverse)
+library(edgeR)
+library(caret)
+library(ROCit)
+library(glmnet)
+```
+
+Set working director
+```{r}
+setwd("~/Documents/Master/internship/APC/APC_Project")
+```
+
+
+To keep this simple we take into consideration only 2 classes. 
+Class 0: samples with no APC mutation (as "no_trunc") 
+Class 1: samples with 1 APC truncating mutation ( as "trunc")
+
+```{r load sample data}
+samp_to_class <- read.csv("./1_trunc_samples.filtered") # samples with 0 or 1 truncating mutation
+#samp_to_class<- samp_to_class[samp_to_class$Class != "2",]
+samp_to_class$Class[samp_to_class$Class != 0] <- "trunc" #Class 0 samples with no trunc mutation vs Class 1 samples with 1 trunc mutation
+samp_to_class$Class[samp_to_class$Class == 0] <- "no_trunc"
+tsb <- samp_to_class[,1] # make tumor sample barcode rownames
+rownames(samp_to_class) <- tsb
+samp_to_class$Class <- as.factor(samp_to_class$Class) # Make class column a factor
+samp_to_class$Class <- relevel(samp_to_class$Class, ref =  "no_trunc") # make no_trunc the reference level
+table(samp_to_class$Class)
+```
+
+# Remove CNA
+```{r}
+#CNV <- read.csv("./APC_CNV") 
+#colnames(CNV) <- c("cna", "Tumor_Sample_Barcode")
+#CNV$Tumor_Sample_Barcode <- sapply(CNV$Tumor_Sample_Barcode, function(x){substring(x, 1, 15)})
+#a<- CNV %>% filter(cna != 0)
+#samp_to_class <- samp_to_class[!samp_to_class$Tumor_Sample_Barcode %in% a$Tumor_Sample_Barcode,]
+#table(samp_to_class$Class)
+```
+
+
+
+Load Gene expression data
+We remove genes with no counts and genes with zero variance
+
+```{r}
+
+# Load all gene expression countdata
+CC <- as.data.frame(read.csv("./Data/Colorectal/Gene_expression/CRC_Gene_expression_all_Counts"))
+names(CC)[1] <- "Tumor_Sample_Barcode"  # rename first column to be Tumor Sample Barcode
+Counts<- CC
+
+# Take the correct samples from Gene expression data
+Counts$Tumor_Sample_Barcode <- sapply(Counts$Tumor_Sample_Barcode, function(x){substring(x, 1, 15)})
+Counts <- Counts[Counts$Tumor_Sample_Barcode %in% samp_to_class$Tumor_Sample_Barcode,]
+set.seed(123)
+Counts <-Counts %>% distinct(Tumor_Sample_Barcode, .keep_all = TRUE) ### take unique rows 
+rownames(Counts) <- Counts$Tumor_Sample_Barcode # make tumor sample barcode rownames
+Counts$Tumor_Sample_Barcode <- NULL # and delete the column
+
+# Remove columns with low counts and or zero variance variables
+temp <- Counts[, - as.numeric(which(apply(Counts, 2, var) == 0))] # Remove columns with zero variance 
+temp2<- temp[,colSums(temp)>10] # Remove column with low counts 
+Counts <- NULL
+Counts<- temp2
+Counts <- t(Counts) # transpose the data frame. We want genes are rows ans samples as columns
+
+#### Make the sample indexes the same
+all(colnames(Counts) %in% rownames(samp_to_class)) # Check if there are the same samples 
+all(colnames(Counts) == rownames(samp_to_class))# Check if the samples are lined up correctly
+samp_to_class <- samp_to_class[match(colnames(Counts), rownames(samp_to_class)), ]
+all(colnames(Counts) == rownames(samp_to_class)) # check again
+all(colnames(Counts) == rownames(samp_to_class))
+```
+
+We remove genes that are unexpressed or very lowly expressed in the samples.
+One simple method to do this is to choose a cutoff based on the median log~2~-transformed counts per gene per million mapped reads (cpm).
+edgeR provides the function, `cpm`, to compute the counts per million.
+
+# Low counts gene costum cutoff
+
+```{r expr-cutoff}
+cpm_log <- cpm(Counts, log = TRUE)
+median_log2_cpm <- apply(cpm_log, 1, median)
+expr_cutoff <- -1
+hist(median_log2_cpm)
+abline(v = expr_cutoff, col = "red", lwd = 3)
+sum(median_log2_cpm > expr_cutoff)
+Counts <- Counts[median_log2_cpm > expr_cutoff, ]
+```
+
+Use EdgeR to normalize the Counts and extract TMM normalized Counts (its also actually cpm)
+```{r pca}
+y <- DGEList(Counts)
+y <- calcNormFactors(y)
+normCounts <- as.data.frame(t(cpm(y)))
+normCounts$Tumor_Sample_Barcode <- rownames(normCounts)
+
+# Merge classes with Gene expression data
+preEldata <- merge(samp_to_class, normCounts, by = 'Tumor_Sample_Barcode')
+preEldata <- preEldata %>% column_to_rownames(var="Tumor_Sample_Barcode")
+#Eldata <- preEldata[,-1]
+Eldata <- preEldata
+```
+
+split data into train and validation set
+
+```{r}
+set.seed(234) 
+default_idx = createDataPartition(Eldata$Class, p = 0.7, list = FALSE)  
+Eldata$Class <- as.factor(Eldata$Class) # make class a factor
+
+train = Eldata[default_idx, ]
+validation = Eldata[-default_idx, ]
+
+# check samples in classes
+table(train$Class)
+table(validation$Class)
+```
+
+5-fold Cross validation
+
+```{r}
+train = Eldata[default_idx, ]
+validation = Eldata[-default_idx, ]
+
+finaldf<- data.frame(matrix(ncol = 2, nrow = 5))
+colnames(finaldf) <- c('AUC', 'fold')
+fmodels<- list()
+fgenes<- list()
+
+for(k in 1:nrow(finaldf)){ # 5 repeats or crossvalidation
+  # Create partitions/folds
+  set.seed(122+k) 
+  split_index <- createDataPartition(train$Class, p = 0.8, list = FALSE, times = 5) 
+  
+  # create output dataframe
+  DEgenes<- list()
+  models <- list()
+  outputdf <- data.frame(matrix(ncol = 2, nrow = ncol(split_index)))
+  colnames(outputdf) <- c('AUC', 'fold')
+  
+  
+  # Cross validation loop
+  for(i in 1:nrow(outputdf)){
+    # use ith column of split_index to create feature and target training/test sets
+    in.train <- train[ split_index[,i],] # make train and test sets
+    test <- train[-split_index[,i],]
+    
+    ### EdgeR
+    sclass<- in.train %>% select(Class)
+    sclass$Tumor_Sample_Barcode<- rownames(sclass)
+    sclass$Class <- as.factor(sclass$Class) # Make class column a factor
+    sclass$Class <- relevel(sclass$Class, ref =  "no_trunc") # make no_trunc the reference level
+    
+    # subset dge object
+    dge <- y[,colnames(y) %in% rownames(in.train)]
+   
+    design <- model.matrix(~0+sclass$Class, data=y$samples)
+    dge$samples$group <- sclass$Class
+    colnames(design) <- levels(dge$samples$group)
+    dge <- estimateDisp(dge, design)
+    fit <- glmQLFit(dge, design) # make fit
+    qlf <- glmQLFTest(fit, contrast=c(-1,1)) # test the fir
+    temp<-as.data.frame(topTags(qlf, 2000))
+    topgenes<- temp %>% filter(FDR<0.5)
+    top <- rownames(topgenes) # select top DE genes
+    DEgenes[[i]]<- top
+    # take correct features/genes from train 
+    #in.train<- as.data.frame(t(in.train))
+    in.train <- in.train[,colnames(in.train) %in% top]
+    in.train <- tibble::rownames_to_column(in.train, "Tumor_Sample_Barcode")
+    in.train <- merge(sclass, in.train, by = 'Tumor_Sample_Barcode')
+    rownames(in.train)<- in.train$Tumor_Sample_Barcode
+    in.train <- in.train[,-1] # remove Tumor sample barcode from the data
+    
+    # take only the correct genes from test set
+    Class<- test$Class
+    test<- test[,colnames(test) %in% top]
+    test <- cbind(Class, test)
+    
+    # train set
+    xtr =as.matrix(in.train[,-1]) # make counts into matrix
+    ytr =as.factor(in.train$Class) # make class into factor
+    # test set
+    xte =as.matrix(test[,-1])
+    yte =as.factor(test$Class)
+    
+    # make model 
+    model <- glmnet(x=xtr,y =ytr ,family = "binomial", alpha=0.5, lambda = 10^(seq(-3, 1, by=0.1)))#, intercept=TRUE)
+    pred <- predict(model, newx  = xte, type="class") # make predictions on test data
+    
+    ACCdf <- as.data.frame(matrix(0, 40, 2))
+    #AUCdf <-  data.frame(matrix(ncol = 2, nrow = 40)) 
+    colnames(ACCdf) <- c('ACC', 'fold')
+    
+    # calculate the Accuracy of the test set in order to select best lambda
+    for(j in 1:nrow(ACCdf)){
+      class <- ifelse(yte == "no_trunc", 0, 1)
+      score <- ifelse(pred[,j] == "no_trunc", 0, 1)
+   
+      for (l in 1: length(class)){
+        if(class[l] ==score[[l]]) { ACCdf[j,'ACC'] <- ACCdf[j,'ACC']+1 } else {} }
+      
+      ACCdf[j,'ACC'] <- ACCdf[j,'ACC']/length(class)
+      ACCdf[j, 'fold'] <- j
+    }
+      
+    # find Accuracy and best lambda
+    temp<-  which.max( ACCdf[,1] )
+    bestACC <- ACCdf$ACC[temp]
+    bestlambda<- model[["lambda"]][[temp]]
+    # train model with best lambda
+    bestmodel <- glmnet(x=xtr,y =ytr ,family = "binomial", alpha=0.5, lambda = bestlambda)#, intercept = TRUE) # or xftr and yftr
+    
+    # Store best model and its ACC
+    models[[i]] <- bestmodel
+    outputdf[i,'AUC'] <- bestACC
+    outputdf[i, 'fold'] <- i
+
+  }
+  # select best model
+  temp2<-  which.max( outputdf[,1] )
+  fmodels[[k]]<- models[[temp2]]
+  bestAUC <- outputdf$AUC[temp2]
+  finaldf[k,'AUC'] <- bestAUC
+  finaldf[k, 'fold'] <- k
+  fgenes[[k]] <- DEgenes[[temp2]]
+ 
+}
+
+#validation = Eldata[-default_idx, ]
+# select best model
+finaldf
+temp3<- which.max( finaldf[,1] )
+finalmodel<- fmodels[[temp3]]
+ERgenes<- fgenes[[temp3]]
+
+# take correct feature from validation set
+Class<- validation$Class
+validation<- validation[,colnames(validation) %in% fgenes[[temp3]]]
+validation <- cbind(Class, validation)
+
+# test on validation set
+xval =as.matrix(validation[,-1])
+yval =as.factor(validation$Class)
+
+pred <- predict(finalmodel, newx  = xval, type="class") # make predictions on validation data
+
+class <- ifelse(yval == "no_trunc", 0, 1)
+score <-as.integer(ifelse(pred == "no_trunc", 0, 1))
+m<- measureit(score = score, class = class,
+              measure = c("ACC", "SENS", "SPEC", "FSCR"))
+mymetrics <- as.data.frame(cbind(Cutoff = m$Cutoff, Depth = m$Depth,
+                                 Accuracy = m$ACC, Sensitivity = m$SENS,
+                                 Specificity = m$SPEC, `F-Score` = m$FSCR))
+rocit_object_empirical <- rocit(score = score, class = class)
+ci.auc <- ciAUC(rocit_object_empirical, level = 0.95)
+ci.auc
+
+features<- as.matrix(coef(finalmodel))
+features<-as.data.frame(features[features!=0,])
+
+#setwd("~/Documents/Master/internship/APC/APC_Project")
+#write.csv(features,"ElNet_genes.Class0_vs_Class1", row.names = TRUE)
+#plot(bestmodel, xvar = "dev", label = TRUE) 
+#plot(model, xvar = "lambda", label = TRUE)
+```
+
+
+```{r}
+predicted2 = as.data.frame(predict(finalmodel, newx = xval, type = "response"))
+predicted2 <- predicted2 %>% mutate(new = 1- s0 )
+colnames(predicted2) <- c("no_trunc", "trunc")
+
+plot(rocit(score = predicted2$trunc, class = yval, negref = "trunc"), YIndex = F) #+title("Class 0 vs Class 2")
+
+```
+AUCs
+trunc vs no trunc 0.516
+0vs 1 0.779
+0vs 2  0.504
+1vs 2  0.616
+
+acc instead 
+
+```{r}
+# ROCit objects
+roc_tnt <- rocit(score = predicted2$trunc, class = yval, negref = "trunc") # 0.516 # by emoving the CNA we get 0.58 # and have 62, 70 and 85 samples
+roc_0v1 <- rocit(score = predicted2$trunc, class = yval, negref = "trunc") # 0.779 # 0.73
+roc_0v2 <- rocit(score = predicted2$trunc, class = yval, negref = "trunc") # 0.504 # 0.69
+roc_1v2 <- rocit(score = predicted2$trunc, class = yval, negref = "trunc") # 0.616 # 0.59
+```
+
+```{r}
+# plot the first, then the second, then add the legend
+plot(roc_tnt, col = c(1,"gray50"), 
+     legend = FALSE, YIndex = FALSE)
+lines(roc_0v1$TPR ~ roc_0v1$FPR, 
+      col = 2, lwd = 2)
+lines(roc_0v2$TPR ~ roc_0v2$FPR, 
+      col = 2, lwd = 2)
+lines(roc_1v2$TPR ~ roc_1v2$FPR, 
+      col = 2, lwd = 2)
+legend("bottomright", col = c(1,4),
+       c("Trunc vs no Trunc", "Class 0 vs Class 1", "Class 0 vs Class 2", "Class 1 vs Class 2"), lwd = 4)
+```
+
+```{r}
+plot(roc_tnt, col = c(1,"gray50"), 
+     legend = FALSE, YIndex = FALSE)
+lines(roc_0v1$TPR ~ roc_0v1$FPR, 
+      col = 2, lwd = 2)
+lines(roc_0v2$TPR ~ roc_0v2$FPR, 
+      col = 3, lwd = 2)
+lines(roc_1v2$TPR ~ roc_1v2$FPR, 
+      col = 4, lwd = 2)
+legend("bottomright", col = c(1,2,3,4),
+       c("Trunc vs no Trunc, AUC = 0.58", "Class 0 vs Class 1, AUC = 0.73", "Class 0 vs Class 2, AUC = 0.69", "Class 1 vs Class 2, AUC = 0.59"), lwd = 3) +title("Classification via Elastic Net")
+```
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+

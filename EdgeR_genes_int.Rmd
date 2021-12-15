@@ -1,0 +1,178 @@
+---
+title: "EdgeR_genes_int"
+author: "Prymidis Dimitrios"
+date: "1/25/2021"
+output: 
+  html_document:
+    toc: true
+    number_sections: true
+---
+
+#  Load libraries 
+```{r setup, include=FALSE, echo=TRUE, results = 'hide'}
+knitr::opts_chunk$set(
+  echo = FALSE, warning=FALSE, message = FALSE
+)
+
+library(tidyverse)
+library(VennDiagram)
+library(RColorBrewer)
+```
+
+Set working director
+```{r}
+setwd("~/Documents/Master/internship/APC/APC_Project")
+```
+
+
+DE genes
+```{r load sample data}
+DE01 <- read.csv("DE_genes.Class0_vs_Class1") 
+DE02 <- read.csv("DE_genes.Class0_vs_Class2") 
+DE21 <- read.csv("DE_genes.Class2_vs_Class1") 
+
+DE01 <- colnames(DE01)
+DE01 <- DE01[-(1:2)]
+DE02 <- colnames(DE02)
+DE02 <- DE02[-(1:2)]
+DE21 <- colnames(DE21)
+DE21 <- DE21[-(1:2)]
+```
+
+
+
+```{r}
+sum(DE01 %in% DE02) # 362
+
+sum(DE01 %in% DE21) # 69
+
+sum(DE02 %in% DE21) # 20
+```
+
+```{r}
+myCol <- brewer.pal(3, "Pastel2")
+
+# Chart
+venn.diagram(
+        x = list(DE01, DE02, DE21),
+        category.names = c("Class 0 vs 1" , "Class 0 vs 2 " , "Class 1 vs 2"),
+        filename = 'Differentially expressed genes.png',
+        output=TRUE,
+        
+        # Output features
+        imagetype="png" ,
+        height = 680 , 
+        width = 680 , 
+        resolution = 300,
+        compression = "lzw",
+        
+        # Circles
+        lwd = 2,
+        lty = 'blank',
+        fill = myCol,
+        
+        # Numbers
+        cex = .6,
+        fontface = "bold",
+        fontfamily = "sans",
+        
+        # Set names
+        cat.cex = 0.6,
+        cat.fontface = "bold",
+        cat.default.pos = "outer",
+        cat.pos = c(-27, 27, 135),
+        cat.dist = c(0.055, 0.055, 0.085),
+        cat.fontfamily = "sans",
+        rotation = 1,
+        
+        main = " Differentially expressed genes"
+) 
+```
+```{r}
+temp<- intersect(DE01,DE02)
+intersect(temp,DE21)
+```
+
+
+
+Elastic Net selected genes
+```{r load sample data}
+EN01 <- read.csv("ElNet_genes.Class0_vs_Class1") 
+EN02 <- read.csv("ElNet_genes.Class0_vs_Class2") 
+EN21 <- read.csv("ElNet_genes.Class2_vs_Class1") 
+
+EN01<- EN01$x
+EN02<- EN02$x
+EN21<- EN21$x
+```
+
+```{r}
+sum(EN01 %in% EN02) # 6
+
+sum(EN01 %in% EN21) # 5
+
+sum(EN02 %in% EN21) # 3
+```
+
+
+
+```{r}
+# Prepare a palette of 3 colors with R colorbrewer:
+myCol <- brewer.pal(3, "Pastel2")
+
+# Chart
+venn.diagram(
+        x = list(EN01, EN02, EN21),
+        category.names = c("Class 0 vs 1" , "Class 0 vs 2 " , "Class 1 vs 2"),
+        filename = 'Elastic Net selected genes.png',
+        output=TRUE,
+        
+        # Output features
+        imagetype="png" ,
+        height = 680 , 
+        width = 680 , 
+        resolution = 300,
+        compression = "lzw",
+        
+        # Circles
+        lwd = 2,
+        lty = 'blank',
+        fill = myCol,
+        
+        # Numbers
+        cex = .6,
+        fontface = "bold",
+        fontfamily = "sans",
+        
+        # Set names
+        cat.cex = 0.6,
+        cat.fontface = "bold",
+        cat.default.pos = "outer",
+        cat.pos = c(-27, 27, 135),
+        cat.dist = c(0.055, 0.055, 0.085),
+        cat.fontfamily = "sans",
+        rotation = 1,
+        
+         main = " Model selected genes"
+)
+```
+
+```{r}
+intersect(EN01, EN02) 
+intersect(EN01, EN21)
+intersect(EN02, EN21)
+
+
+```
+
+
+
+
+
+
+
+
+
+
+
+

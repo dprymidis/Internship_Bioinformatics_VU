@@ -1,0 +1,235 @@
+---
+title: "Wnt_genes"
+author: "Prymidis Dimitrios"
+date: "1/3/2021"
+output: 
+  html_document:
+    toc: true
+    number_sections: true
+---
+
+#  Load libraries 
+```{r setup, include=FALSE, echo=TRUE, results = 'hide'}
+knitr::opts_chunk$set(
+  echo = FALSE, warning=FALSE, message = FALSE
+)
+
+library(tidyverse)
+library(edgeR)
+library(caret)
+library(ROCit)
+library(glmnet)
+```
+
+Set working director
+```{r}
+setwd("~/Documents/Master/internship/APC/APC_Project")
+```
+
+
+To keep this simple we take into consideration only 2 classes. 
+Class 0: samples with no APC mutation (as "no_trunc") 
+Class 1: samples with 1 APC truncating mutation ( as "trunc")
+
+```{r load sample data}
+samp_to_class <- read.csv("./1_trunc_samples.filtered") # samples with 0 or 1 truncating mutation
+#samp_to_class<- samp_to_class[samp_to_class$Class != "2",]
+samp_to_class$Class[samp_to_class$Class != 0] <- "trunc" #Class 0 samples with no trunc mutation vs Class 1 samples with 1 trunc mutation
+samp_to_class$Class[samp_to_class$Class == 0] <- "no_trunc"
+tsb <- samp_to_class[,1] # make tumor sample barcode rownames
+rownames(samp_to_class) <- tsb
+samp_to_class$Class <- as.factor(samp_to_class$Class) # Make class column a factor
+samp_to_class$Class <- relevel(samp_to_class$Class, ref =  "no_trunc") # make no_trunc the reference level
+table(samp_to_class$Class)
+```
+
+# Remove CNA
+```{r}
+#CNV <- read.csv("./APC_CNV") 
+#colnames(CNV) <- c("cna", "Tumor_Sample_Barcode")
+#CNV$Tumor_Sample_Barcode <- sapply(CNV$Tumor_Sample_Barcode, function(x){substring(x, 1, 15)})
+#a<- CNV %>% filter(cna != 0)
+#samp_to_class <- samp_to_class[!samp_to_class$Tumor_Sample_Barcode %in% a$Tumor_Sample_Barcode,]
+#table(samp_to_class$Class)
+```
+
+Load Gene expression data
+We remove genes with no counts and genes with zero variance
+
+```{r PCA on all the data}
+
+# Load all gene expression countdata
+CC <- as.data.frame(read.csv("./Data/Colorectal/Gene_expression/CRC_Gene_expression_all_Counts"))
+names(CC)[1] <- "Tumor_Sample_Barcode"  # rename first column to be Tumor Sample Barcode
+Counts<- CC
+
+# Take the correct samples from Gene expression data
+Counts$Tumor_Sample_Barcode <- sapply(Counts$Tumor_Sample_Barcode, function(x){substring(x, 1, 15)})
+Counts <- Counts[Counts$Tumor_Sample_Barcode %in% samp_to_class$Tumor_Sample_Barcode,]
+set.seed(123)
+Counts <-Counts %>% distinct(Tumor_Sample_Barcode, .keep_all = TRUE) ### take unique rows 
+rownames(Counts) <- Counts$Tumor_Sample_Barcode # make tumor sample barcode rownames
+Counts$Tumor_Sample_Barcode <- NULL # and delete the column
+
+# Remove columns with low counts and or zero variance variables
+temp <- Counts[, - as.numeric(which(apply(Counts, 2, var) == 0))] # Remove columns with zero variance 
+temp2<- temp[,colSums(temp)>10] # Remove column with low counts 
+Counts <- NULL
+Counts<- temp2
+Counts <- t(Counts) # transpose the data frame. We want genes are rows ans samples as columns
+
+#### Make the sample indexes the same
+all(colnames(Counts) %in% rownames(samp_to_class)) # Check if there are the same samples 
+all(colnames(Counts) == rownames(samp_to_class))# Check if the samples are lined up correctly
+samp_to_class <- samp_to_class[match(colnames(Counts), rownames(samp_to_class)), ]
+all(colnames(Counts) == rownames(samp_to_class)) # check again
+all(colnames(Counts) == rownames(samp_to_class))
+```
+
+We remove genes that are unexpressed or very lowly expressed in the samples.
+One simple method to do this is to choose a cutoff based on the median log~2~-transformed counts per gene per million mapped reads (cpm).
+edgeR provides the function, `cpm`, to compute the counts per million.
+
+# Low counts gene costum cutoff
+
+```{r expr-cutoff}
+cpm_log <- cpm(Counts, log = TRUE)
+median_log2_cpm <- apply(cpm_log, 1, median)
+expr_cutoff <- -1
+hist(median_log2_cpm)
+abline(v = expr_cutoff, col = "red", lwd = 3)
+sum(median_log2_cpm > expr_cutoff)
+Counts <- Counts[median_log2_cpm > expr_cutoff, ]
+```
+
+Use EdgeR to normalize the Counts and extract TMM normalized Counts (its also actually cpm)
+```{r pca}
+y <- DGEList(Counts)
+y <- calcNormFactors(y)
+normCounts <- as.data.frame(t(cpm(y)))
+normCounts$Tumor_Sample_Barcode <- rownames(normCounts)
+samp_to_class <- read.csv("./1_trunc_samples.filtered")
+```
+
+```{r}
+Counts<- normCounts
+#Counts$Tumor_Sample_Barcode <- rownames(Counts)
+
+# Take the correct samples from Gene expression data
+Counts$Tumor_Sample_Barcode <- sapply(Counts$Tumor_Sample_Barcode, function(x){substring(x, 1, 15)})
+Counts <- Counts[Counts$Tumor_Sample_Barcode %in% samp_to_class$Tumor_Sample_Barcode,]
+Counts <-Counts %>% distinct(Counts$Tumor_Sample_Barcode, .keep_all = TRUE) ### take unique rows (it is a bit random which data it is taking)L
+
+Counts$Tumor_Sample_Barcode <- rownames(Counts)
+genes <- read.csv("./APC_reporter_gene_candidates.txt") 
+Counts <- Counts[Counts$Tumor_Sample_Barcode %in% samp_to_class$Tumor_Sample_Barcode,]
+rownames(Counts)<- Counts$Tumor_Sample_Barcode
+a<- Counts[,colnames(Counts) %in% genes$Genes]
+a$Tumor_Sample_Barcode <- rownames(a)
+Counts <- a
+
+
+# Merge classes with Gene expression data
+Counts <- merge(samp_to_class, Counts, by = 'Tumor_Sample_Barcode')
+rownames(Counts) <- Counts$Tumor_Sample_Barcode
+Counts$Tumor_Sample_Barcode <- NULL
+
+
+Counts.scaled <- Counts
+Counts.scaled[, -c(1)] <- scale(Counts.scaled[, -c(1)], center = TRUE, scale = TRUE)
+Counts.log <- Counts
+Counts.log[, -c(1)] <- log2(Counts.log[, -c(1)]+1) # take the log base e
+Counts.log %>% group_by(Class) 
+```
+
+```{r}
+################
+a0<- Counts[Counts$Class =="0",]
+a0$Class<- NULL
+logmeans0 <-as.data.frame(log2(colMeans(a0)))
+colnames(logmeans0) <- "log2mean"
+logmeans0$Class <- "0"
+
+a1<- Counts[Counts$Class =="1",]
+a1$Class<- NULL
+logmeans1 <-as.data.frame(log2(colMeans(a1)))
+colnames(logmeans1) <- "log2mean"
+logmeans1$Class <- "1"
+
+a2<- Counts[Counts$Class =="2",]
+a2$Class<- NULL
+logmeans2 <-as.data.frame(log2(colMeans(a2)))
+colnames(logmeans2) <- "log2mean"
+logmeans2$Class <- "2"
+
+test0v1 <- rbind(logmeans0, logmeans1)
+t.test(log2mean ~ Class, data = test0v1)
+
+test0v2 <- rbind(logmeans0, logmeans2)
+t.test(log2mean ~ Class, data = test0v2)
+
+test1v2 <- rbind(logmeans1, logmeans2)
+t.test(log2mean ~ Class, data = test1v2)
+
+test <- cbind(logmeans0, logmeans1)
+colnames(test)<- c("C0", "class0", "C1", "class1")
+test<- rownames_to_column(test)
+test <- test %>% mutate(lala = C1 - C0)
+
+test0v1 %>% group_by(Class) %>%
+  ggplot( aes(x=log2mean)) +
+  geom_density()
+
+test0v1 %>% group_by(Class) %>% ggplot(aes(x=log2mean, color = Class)) +  geom_density()
+test0v2 %>% group_by(Class) %>% ggplot(aes(x=log2mean, color = Class)) +  geom_density()
+test1v2 %>% group_by(Class) %>% ggplot(aes(x=log2mean, color = Class)) +  geom_density()
+
+plotall<- rbind(logmeans0, logmeans1, logmeans2)
+plotall %>% group_by(Class) %>% ggplot(aes(x=log2mean, color = Class)) +  geom_density()
+```
+
+############### heatmap
+
+```{r}
+a0<- Counts[Counts$Class =="0",]
+a0$Class<- NULL
+logmeans0 <-as.data.frame(log2(colMeans(a0)))
+colnames(logmeans0) <- "Cl0"
+logmeans0$Class <- NULL
+
+a1<- Counts[Counts$Class =="1",]
+a1$Class<- NULL
+logmeans1 <-as.data.frame(log2(colMeans(a1)))
+colnames(logmeans1) <- "Cl1"
+logmeans1$Class <- NULL
+
+a2<- Counts[Counts$Class =="2",]
+a2$Class<- NULL
+logmeans2 <-as.data.frame(log2(colMeans(a2)))
+colnames(logmeans2) <- "Cl2"
+logmeans2$Class <- NULL
+```
+
+```{r}
+logmeanslast<- cbind(logmeans0, logmeans2, logmeans1)
+
+logmeanslast$Cl1<- logmeanslast$Cl1 - logmeanslast$Cl0
+logmeanslast$Cl2<- logmeanslast$Cl2 - logmeanslast$Cl0
+logmeanslast$Cl0 <- NULL
+
+heat<- as.matrix(logmeanslast)
+heatmap(heat)
+
+dev.off()
+library("gplots")
+heatmap.2(heat, scale = "none", col = bluered(100), 
+          trace = "none", density.info = "none")
+
+library("pheatmap")
+pheatmap(heat, cutree_rows = 4)
+```
+
+
+
+
+
