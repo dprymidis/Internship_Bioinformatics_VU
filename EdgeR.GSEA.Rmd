@@ -103,17 +103,13 @@ Counts <- Counts[median_log2_cpm > expr_cutoff, ]
 
 
 After removing all genes with a median log~2~ cpm below `r expr_cutoff`, we have `r sum(median_log2_cpm > expr_cutoff)` genes remaining.
-A good rule of thumb when analyzing RNA-seq data from a single cell type is to expect 9-12 thousand expressed genes.
 
-After filtering lowly expressed genes, we recalculate the log~2~ cpm.
 
 ```{r}
 cpm_log <- cpm(Counts, log = TRUE)
 ```
 
 # PCA
-Another method to view the relationships between samples is principal components analysis (PCA).
-Hese we use log(cpm) from our raw counts
 
 ```{r pca}
 y = droplevels(samp_to_class$Class)
@@ -143,11 +139,11 @@ The argument `coef = 2` corresponds to testing the second column of the design m
 y <- estimateDisp(y, design)
 fit <- glmQLFit(y, design)
 qlf <- glmQLFTest(fit, contrast=c(-1,1))
-a<-as.data.frame(topTags(qlf, 2000))
-aa<- a %>% filter(FDR<0.05)
+res<-as.data.frame(topTags(qlf, 2000))
+fres<- res %>% filter(FDR<0.05)
 
-#a<- qlf[["table"]][["PValue"]]
-#count(a< 0.01)
+#res<- qlf[["table"]][["PValue"]]
+#count(res< 0.01)
 
 top <- rownames(topTags(qlf, 721))
 top10 <- rownames(topTags(qlf, 10))
