@@ -19,11 +19,11 @@ matchedsamples <- read.csv("./CRC_Matched_Samples")
 matchedsamples[1] <- NULL
 matchedsamples <- as.character(matchedsamples$Tumor_Sample_Barcode)
 
-## change names in data to be the first 15 to make the selection 
-SNVdata$Tumor_Sample_Barcode <- sapply(SNVdata$Tumor_Sample_Barcode, function(x){substring(x, 1, 15)})
+## MSS sample selection
+SNVdata$Tumor_Sample_Barcode <- sapply(SNVdata$Tumor_Sample_Barcode, function(x){substring(x, 1, 15)}) # procss names
 SNVpost <- SNVdata[SNVdata$Tumor_Sample_Barcode %in% matchedsamples,] # take only MSS samples that have all the data
 
-## Take all APC mutations data 
+## Take all APC mutation data 
 APCdata <- SNVpost %>% filter(Hugo_Symbol == "APC")
 mutpos <- APCdata$Protein_position # take the positions
 mutpos <- substr(mutpos, start = 1, stop = 4) %>% str_remove ("/") %>% str_remove ("-") # only the starting position
@@ -142,18 +142,19 @@ write.csv(samp_to_class,"1_trunc_samples.prefiltered", row.names = FALSE)
 
 ####
 # look at KRAS in our classes
-KRAS <- SNVpost %>% filter(Hugo_Symbol == "KRAS")
-a<- unique(KRAS$Tumor_Sample_Barcode)
-samp_to_class <- read.csv("./1_trunc_samples.filtered")
+KRASres <- SNVpost %>% filter(Hugo_Symbol == "KRAS")
+KRAS<- unique(KRASres$Tumor_Sample_Barcode)
+
+samp_to_class <- read.csv("./1_trunc_samples.filtered") # load classes
 c0 <- samp_to_class %>% filter(Class == 0)
 duplicated(c0)
 c1 <- samp_to_class %>% filter(Class == 1)
 c2 <- samp_to_class %>% filter(Class == 2)
 
-sum(c0$Tumor_Sample_Barcode %in% a)
-sum(c1$Tumor_Sample_Barcode %in% a)
-sum(c2$Tumor_Sample_Barcode %in% a)
+sum(c0$Tumor_Sample_Barcode %in% KRAS)
+sum(c1$Tumor_Sample_Barcode %in% KRAS)
+sum(c2$Tumor_Sample_Barcode %in% KRAS)
 
-chigh <- KRAS %>% filter(IMPACT == "HIGH")
-a<- unique(chigh$Tumor_Sample_Barcode)
+chigh <- KRASres %>% filter(IMPACT == "HIGH")
+KRAS<- unique(chigh$Tumor_Sample_Barcode)
 
